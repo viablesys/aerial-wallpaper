@@ -1,0 +1,8 @@
+{
+  "uuid": "aerial-wallpaper@viablesys",
+  "name": "Aerial Wallpaper",
+  "description": "Plays the Aerial mpv window as the desktop background: desktop layer, hidden from alt-tab, overview and window lists, paused when covered or blanked, stopped on lock.",
+  "shell-version": ["51"],
+  "url": "https://github.com/viablesys/aerial-wallpaper",
+  "version": 1
+}
