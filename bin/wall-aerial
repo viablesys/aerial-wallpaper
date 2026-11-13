@@ -1,0 +1,38 @@
+#!/bin/bash
+# Loop Apple Aerial footage fullscreen.
+# Args: a playlist name from .meta/playlists/<name>.txt, or categories (Space Underwater Cities Landscapes), or "all".
+# No args: the name in .meta/default (falls back to all categories).
+# q or Esc quits, > / < skip.
+# Each video start is logged to .meta/played.log; shot IDs listed in .meta/skip.txt are left out.
+root=~/Videos/aerial
+meta=$root/.meta
+all=(Space Underwater Cities Landscapes)
+ids() { sed 's/#.*//; s/[[:space:]]*$//' "$1" | grep .; }  # pattern lines, comments stripped
+args=("$@")
+[ ${#args[@]} -eq 0 ] && [ -s "$meta/default" ] && read -r -a args < "$meta/default"
+playlist=
+if [ ${#args[@]} -eq 1 ] && [ -f "$meta/playlists/${args[0]}.txt" ]; then
+  playlist=$meta/playlists/${args[0]}.txt; cats=("${all[@]}")
+elif [ ${#args[@]} -eq 0 ] || [ "${args[0]}" = all ]; then
+  cats=("${all[@]}")
+else
+  cats=("${args[@]}")
+fi
+skip=$meta/skip.txt
+mapfile -t files < <(for c in "${cats[@]}"; do find "$root/$c" -name '*.mov' 2>/dev/null; done \
+  | { [ -n "$playlist" ] && grep -Ff <(ids "$playlist" | sed "s/.*/[&]/") || cat; } \
+  | { [ -s "$skip" ] && grep -vFf <(ids "$skip") || cat; })
+[ ${#files[@]} -eq 0 ] && { notify-send "Aerial" "No videos match ${args[*]:-the default}"; exit 1; }
+# AERIAL_MODE=wallpaper: a plain window the aerial-wallpaper@viablesys GNOME extension turns into the desktop background.
+# Wallpaper mode takes no keyboard or mouse input (Alt+arrows would pan the video, the wheel would seek);
+# it is driven only over the IPC socket.
+if [ "${AERIAL_MODE:-}" = wallpaper ]; then
+  win=(--wayland-app-id=aerial-wallpaper --border=no --keepaspect-window=no --wayland-configure-bounds=no
+       --input-default-bindings=no --input-builtin-bindings=no --input-vo-keyboard=no --input-cursor=no
+       --input-cursor-passthrough=yes --window-dragging=no)
+else
+  win=(--fs --input-default-bindings=yes)
+fi
+exec mpv "${win[@]}" --shuffle --loop-playlist=inf --no-audio --hwdec=auto-safe --background-color=#000000 --force-window=immediate --no-osc --osd-level=0 \
+  --really-quiet \
+  --input-ipc-server="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/aerial-mpv.sock" --script="$meta/log-played.lua" "${files[@]}"
