@@ -6,12 +6,19 @@
 // window lists, and sizes it to the primary monitor. It pauses mpv over its IPC socket
 // while the screen is blanked or the desktop is covered, and the service runs only
 // while the extension is enabled (the shell disables extensions on lock).
+//
+// In the overview the shell hides the window layer and paints a static background per
+// workspace (ui/workspace.js WorkspaceBackground), so the extension puts a live
+// Clutter.Clone of the video window into each of those backgrounds.
 
+import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 import Meta from 'gi://Meta';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
+import * as Workspace from 'resource:///org/gnome/shell/ui/workspace.js';
+import {Extension, InjectionManager} from 'resource:///org/gnome/shell/extensions/extension.js';
+import Shell from 'gi://Shell';
 
 const APP_ID = 'aerial-wallpaper';
 const UNIT = 'aerial-wallpaper.service';
@@ -38,6 +45,18 @@ export default class AerialWallpaper extends Extension {
             this._updatePause();
         });
         this._connect(global.workspace_manager, 'active-workspace-changed', () => this._updatePause());
+        this._connect(Main.overview, 'showing', () => this._updatePause());
+        this._connect(Main.overview, 'hidden', () => this._updatePause());
+
+        this._backgrounds = new Map();  // WorkspaceBackground -> {clone, ids}
+        this._injections = new InjectionManager();
+        const self = this;
+        this._injections.overrideMethod(Workspace.WorkspaceBackground.prototype, '_init',
+            original => function (...args) {
+                original.apply(this, args);
+                self._addBackground(this);
+            });
+        this._findBackgrounds(Main.layoutManager.overviewGroup).forEach(bg => this._addBackground(bg));
 
         global.get_window_actors().forEach(actor => this._watch(actor.meta_window));
         if (this._manageService)
@@ -47,6 +66,13 @@ export default class AerialWallpaper extends Extension {
     disable() {
         if (this._manageService)
             this._systemctl('stop');
+        this._injections.clear();
+        this._backgrounds.forEach(({clone, ids}, bg) => {
+            clone?.destroy();
+            ids.forEach(([obj, id]) => obj.disconnect(id));
+        });
+        this._backgrounds = null;
+        this._testTimers?.forEach(id => GLib.source_remove(id));
         this._signals.forEach(([obj, id]) => obj.disconnect(id));
         this._watched.forEach((ids, win) => ids.forEach(id => win.disconnect(id)));
         this._signals = null;
@@ -71,6 +97,7 @@ export default class AerialWallpaper extends Extension {
                 ids.forEach(id => win.disconnect(id));
                 this._watched.delete(win);
                 this._ours.delete(win);
+                this._updateClones();
             }),
         ];
         this._watched.set(win, ids);
@@ -93,6 +120,9 @@ export default class AerialWallpaper extends Extension {
             global.display.focus_default_window(global.get_current_time());
         this._paused = null;  // a new mpv starts playing: resend the current state
         this._updatePause();
+        this._updateClones();
+        if (GLib.getenv('AERIAL_WALLPAPER_TEST_OVERVIEW'))
+            this._testOverview();
         console.log(`${this.uuid}: adopted window type=${win.get_window_type()} ` +
             `skip_taskbar=${win.is_skip_taskbar()}`);
     }
@@ -115,6 +145,8 @@ export default class AerialWallpaper extends Extension {
         const display = global.display;
         if (Main.screenShield?.active)
             return true;
+        if (Main.overview.visible)  // the clones show the video in the overview
+            return false;
         if (Main.layoutManager.monitors.length === 0)
             return true;
         const primary = display.get_primary_monitor();
@@ -125,6 +157,85 @@ export default class AerialWallpaper extends Extension {
             !this._ours.has(win) && !win.minimized && win.showing_on_its_workspace() &&
             win.get_monitor() === primary &&
             win.get_maximize_flags() === Meta.MaximizeFlags.BOTH);
+    }
+
+    _findBackgrounds(actor, out = []) {
+        if (actor instanceof Workspace.WorkspaceBackground)
+            out.push(actor);
+        else
+            actor.get_children().forEach(child => this._findBackgrounds(child, out));
+        return out;
+    }
+
+    _addBackground(bg) {
+        if (!this._backgrounds || this._backgrounds.has(bg))
+            return;
+        const entry = {clone: null, ids: []};
+        entry.ids.push([bg, bg.connect('destroy', () => this._backgrounds?.delete(bg))]);
+        // A changed wallpaper adds a new background actor on top; keep the clone above it.
+        const group = bg._backgroundGroup;
+        entry.ids.push([group, group.connect('child-added', (_g, child) => {
+            if (entry.clone && child !== entry.clone)
+                group.set_child_above_sibling(entry.clone, null);
+        })]);
+        this._backgrounds.set(bg, entry);
+        this._updateClone(bg);
+    }
+
+    _updateClones() {
+        this._backgrounds?.forEach((_entry, bg) => this._updateClone(bg));
+    }
+
+    _updateClone(bg) {
+        const entry = this._backgrounds.get(bg);
+        const [win] = this._ours;
+        const source = win?.get_compositor_private() ?? null;
+        const wanted = source && bg._monitorIndex === global.display.get_primary_monitor() ? source : null;
+        if (entry.clone && entry.clone.source === wanted)
+            return;
+        entry.clone?.destroy();
+        entry.clone = null;
+        if (!wanted)
+            return;
+        entry.clone = new Clutter.Clone({
+            source: wanted,
+            x_expand: true,
+            y_expand: true,
+            x_align: Clutter.ActorAlign.FILL,
+            y_align: Clutter.ActorAlign.FILL,
+        });
+        bg._backgroundGroup.add_child(entry.clone);
+    }
+
+    // Test hook (headless shell): open the overview, screenshot it, close it.
+    _testOverview() {
+        const at = (seconds, fn) => this._testTimers.push(
+            GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, seconds, () => {
+                fn();
+                return GLib.SOURCE_REMOVE;
+            }));
+        this._testTimers = [];
+        at(4, () => {
+            Main.overview.show();
+            console.log(`${this.uuid}: test overview shown, clones=${[...this._backgrounds.values()].filter(e => e.clone).length}/${this._backgrounds.size}`);
+        });
+        at(9, () => {
+            const path = GLib.build_filenamev([GLib.get_user_runtime_dir(), 'overview.png']);
+            const stream = Gio.File.new_for_path(path).replace(null, false, Gio.FileCreateFlags.NONE, null);
+            new Shell.Screenshot().screenshot(false, stream, (shooter, res) => {
+                try {
+                    shooter.screenshot_finish(res);
+                    console.log(`${this.uuid}: test screenshot ${path}`);
+                } catch (e) {
+                    console.warn(`${this.uuid}: test screenshot failed: ${e.message}`);
+                }
+                stream.close(null);
+            });
+        });
+        at(14, () => {
+            Main.overview.hide();
+            console.log(`${this.uuid}: test overview hidden`);
+        });
     }
 
     _updatePause() {

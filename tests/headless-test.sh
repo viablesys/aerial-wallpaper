@@ -6,7 +6,7 @@ set -u
 repo=$(cd "$(dirname "$0")/.." && pwd)
 T=$repo/tmp/headless; rm -rf "$T"; mkdir -p "$T"/{config,data/gnome-shell/extensions,run}; chmod 700 "$T/run"
 ln -s "$repo/extension" "$T/data/gnome-shell/extensions/aerial-wallpaper@viablesys"
-export XDG_CONFIG_HOME=$T/config XDG_DATA_HOME=$T/data XDG_RUNTIME_DIR=$T/run AERIAL_WALLPAPER_NO_SYSTEMD=1 AERIAL_WALLPAPER_DEBUG=1
+export XDG_CONFIG_HOME=$T/config XDG_DATA_HOME=$T/data XDG_RUNTIME_DIR=$T/run AERIAL_WALLPAPER_NO_SYSTEMD=1 AERIAL_WALLPAPER_DEBUG=1 AERIAL_WALLPAPER_TEST_OVERVIEW=1
 unset WAYLAND_DISPLAY DISPLAY NOTIFY_SOCKET
 ipc() { python3 - "$XDG_RUNTIME_DIR/aerial-mpv.sock" "$1" <<'EOF'
 import json, socket, sys
@@ -26,7 +26,10 @@ exec dbus-run-session -- bash -c '
   for i in $(seq 50); do [ -S "$XDG_RUNTIME_DIR/aerial-test" ] && break; sleep 0.2; done
   export WAYLAND_DISPLAY=aerial-test
   AERIAL_MODE=wallpaper ~/.local/bin/wall-aerial > "$XDG_RUNTIME_DIR/mpv.log" 2>&1 &
-  sleep 6
+  sleep 2
+  echo "== playback position through the overview test (shown ~4 s after adoption, hidden ~14 s):"
+  for i in $(seq 9); do echo "   $(date +%T) time=$(ipc time-pos) pause=$(ipc pause)"; sleep 2; done
+  grep -a -E "test (overview|screenshot)" "$XDG_RUNTIME_DIR/shell.log" | sed "s/^/   /"
   echo "== adoption"; grep -a "aerial-wallpaper@viablesys" "$XDG_RUNTIME_DIR/shell.log" || echo "(no log line)"
   echo "== playing: $(ipc filename) pause=$(ipc pause) time=$(ipc time-pos)"; sleep 2; echo "== 2 s later: time=$(ipc time-pos) dropped=$(ipc frame-drop-count) hwdec=$(ipc hwdec-current) osd=$(ipc osd-width)x$(ipc osd-height)"
   mpv --idle=yes --force-window=immediate --window-maximized=yes --wayland-app-id=cover-test --input-ipc-server="$XDG_RUNTIME_DIR/cover.sock" > /dev/null 2>&1 &
