@@ -2,6 +2,25 @@
 
 Plays the Aerial videos (`wall-aerial`, mpv) as the GNOME desktop background on GNOME Shell 51 (Wayland).
 
+![Desktop: Aerial video with the Conky panel, under a normal window](docs/screenshots/desktop.jpg)
+
+<p>
+<img src="docs/screenshots/conky-panel.jpg" alt="The Conky panel" width="240">
+<img src="docs/screenshots/prefs-conky.png" alt="Preferences: Conky page" width="300">
+</p>
+
+The same panel restyled and moved from the CLI (`aerial-wallpaper set conky-position bottom-left`,
+`set conky-accent-color "#ff9a3c"`, `conky disable processes`):
+
+![Desktop after CLI changes](docs/screenshots/desktop-restyled.jpg)
+
+| Wallpaper | Widgets | CLI |
+|---|---|---|
+| ![Preferences: Wallpaper](docs/screenshots/prefs-wallpaper.png) | ![Preferences: Widgets](docs/screenshots/prefs-widgets.png) | ![Preferences: CLI](docs/screenshots/prefs-cli.png) |
+
+Screenshots come from `tests/conky-test.sh` (headless shell, 3840x2160 virtual monitor; the black window is a
+plain mpv window used to check stacking).
+
 - `extension/` — GNOME Shell extension `aerial-wallpaper@viablesys`. It finds mpv's window (Wayland app id
   `aerial-wallpaper`), retypes it as a DESKTOP window (`Meta.Window.set_type`), hides it from window lists,
   sticks it to all workspaces and sizes it to the primary monitor. It pauses mpv over its IPC socket
