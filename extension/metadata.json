@@ -1,8 +1,11 @@
 {
   "uuid": "aerial-wallpaper@viablesys",
   "name": "Aerial Wallpaper",
-  "description": "Plays the Aerial mpv window as the desktop background: desktop layer, hidden from alt-tab, overview and window lists, paused when covered or blanked, stopped on lock.",
-  "shell-version": ["51"],
+  "description": "Plays the Aerial mpv window as the desktop background: desktop layer, hidden from alt-tab, overview and window lists, paused when covered or blanked, stopped on lock. Runs a Conky panel above it and keeps other widget windows there. Every setting is also on the CLI (aerial-wallpaper).",
+  "shell-version": [
+    "51"
+  ],
   "url": "https://github.com/viablesys/aerial-wallpaper",
-  "version": 1
+  "version": 2,
+  "settings-schema": "org.gnome.shell.extensions.aerial-wallpaper"
 }

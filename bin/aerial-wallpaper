@@ -1,0 +1,314 @@
+#!/usr/bin/python3
+"""aerial-wallpaper: command line for the aerial-wallpaper@viablesys GNOME extension.
+
+Every setting the preferences window shows is here too, so scripts and agents can drive it.
+Settings live in GSettings (schema org.gnome.shell.extensions.aerial-wallpaper); the running
+extension applies changes immediately. Add --json to any read command for machine output.
+
+  status                     extension, services, current video, Conky
+  keys                       every setting: type, value, default, allowed values, description
+  get KEY                    one setting
+  set KEY VALUE...           change a setting (lists: several values, or one JSON array)
+  reset KEY | --all          back to the default
+  playlists                  playlists in ~/Videos/aerial/.meta/playlists/
+  next | prev | now          skip the video, or print the current one
+  conky sections             all sections, in order, enabled or not
+  conky enable|disable SECTION...
+  conky move SECTION INDEX   reorder (0 = first)
+  conky on|off|restart       run or stop the panel, or restart it
+  conky config               print the generated Conky config
+  prefs                      open the preferences window
+  log [-n N]                 recent log lines from the extension and its services
+"""
+import json
+import os
+import socket
+import subprocess
+import sys
+
+import gi
+
+gi.require_version("Gio", "2.0")
+gi.require_version("GLib", "2.0")
+from gi.repository import Gio, GLib  # noqa: E402
+
+UUID = "aerial-wallpaper@viablesys"
+SCHEMA = "org.gnome.shell.extensions.aerial-wallpaper"
+UNITS = ["aerial-wallpaper.service", "aerial-conky.service"]
+SECTIONS = ["header", "clock", "system", "cpu", "cores", "memory", "gpu", "disks",
+            "network", "processes", "aerial", "custom"]
+REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+PLAYLISTS = os.path.expanduser("~/Videos/aerial/.meta/playlists")
+CONKY_CONF = os.path.join(GLib.get_user_config_dir(), "aerial-wallpaper", "conky.conf")
+MPV_SOCKET = os.path.join(GLib.get_user_runtime_dir(), "aerial-mpv.sock")
+
+
+class Fail(Exception):
+    pass
+
+
+def schema():
+    source = Gio.SettingsSchemaSource.new_from_directory(
+        os.path.join(REPO, "extension", "schemas"), Gio.SettingsSchemaSource.get_default(), False)
+    return source.lookup(SCHEMA, False)
+
+
+SCHEMA_OBJ = schema()
+SETTINGS = Gio.Settings.new_full(SCHEMA_OBJ, None, None)
+
+
+def unpack(variant):
+    return variant.unpack() if variant is not None else None
+
+
+def key_info(name):
+    key = SCHEMA_OBJ.get_key(name)
+    rng = key.get_range().unpack()
+    kind, allowed = rng
+    info = {
+        "key": name,
+        "type": key.get_value_type().dup_string(),
+        "value": unpack(SETTINGS.get_value(name)),
+        "default": unpack(key.get_default_value()),
+        "summary": key.get_summary(),
+        "description": key.get_description(),
+    }
+    if kind == "enum":
+        info["choices"] = list(allowed)
+    elif kind == "range":
+        info["range"] = list(allowed)
+    return info
+
+
+def parse_value(name, args):
+    key = SCHEMA_OBJ.get_key(name)
+    t = key.get_value_type().dup_string()
+    if t == "as":
+        if len(args) == 1 and args[0].startswith("["):
+            values = json.loads(args[0])
+        else:
+            values = [a for arg in args for a in arg.split(",") if a] if len(args) == 1 else list(args)
+        return GLib.Variant("as", [str(v) for v in values])
+    if len(args) != 1:
+        raise Fail(f"{name} takes one value")
+    raw = args[0]
+    if t == "b":
+        if raw.lower() not in ("true", "false", "on", "off", "yes", "no", "1", "0"):
+            raise Fail(f"{name} is a boolean: true or false")
+        return GLib.Variant("b", raw.lower() in ("true", "on", "yes", "1"))
+    if t == "i":
+        return GLib.Variant("i", int(raw))
+    if t == "d":
+        return GLib.Variant("d", float(raw))
+    if t == "s":
+        if name == "conky-custom-text":
+            raw = raw.replace("\\n", "\n")
+        return GLib.Variant("s", raw)
+    raise Fail(f"unsupported type {t}")
+
+
+def set_key(name, variant):
+    if name not in SCHEMA_OBJ.list_keys():
+        raise Fail(f"unknown key {name}; see `aerial-wallpaper keys`")
+    if not SCHEMA_OBJ.get_key(name).range_check(variant):
+        info = key_info(name)
+        allowed = info.get("choices") or info.get("range")
+        raise Fail(f"{variant.print_(False)} is not allowed for {name}; allowed: {allowed}")
+    SETTINGS.set_value(name, variant)
+    Gio.Settings.sync()
+
+
+def out(data, as_json, text=None):
+    if as_json:
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+    elif text is not None:
+        print(text)
+    elif isinstance(data, (dict, list)):
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+    else:
+        print(data)
+
+
+def run(cmd):
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    return r.stdout.strip()
+
+
+def mpv(command):
+    s = socket.socket(socket.AF_UNIX)
+    try:
+        s.connect(MPV_SOCKET)
+    except OSError as e:
+        raise Fail(f"the wallpaper video is not running ({e.strerror})")
+    with s:
+        s.sendall((json.dumps({"command": command}) + "\n").encode())
+        for line in s.makefile():
+            r = json.loads(line)
+            if "error" in r:
+                if r["error"] != "success":
+                    raise Fail(f"mpv: {r['error']}")
+                return r.get("data")
+    return None
+
+
+def mpv_or_none(command):
+    try:
+        return mpv(command)
+    except (Fail, OSError):
+        return None
+
+
+def playlists():
+    try:
+        return sorted(f[:-4] for f in os.listdir(PLAYLISTS) if f.endswith(".txt"))
+    except FileNotFoundError:
+        return []
+
+
+def status():
+    info = run(["gnome-extensions", "info", UUID])
+    state = next((line.split(":", 1)[1].strip() for line in info.splitlines()
+                  if line.strip().startswith("State:")), "NOT INSTALLED")
+    path = mpv_or_none(["get_property", "path"])
+    return {
+        "extension": state,
+        "services": {u: run(["systemctl", "--user", "is-active", u]) for u in UNITS},
+        "video": {
+            "path": path,
+            "paused": mpv_or_none(["get_property", "pause"]),
+            "playlist": SETTINGS.get_string("playlist") or "(default)",
+        },
+        "conky": {
+            "enabled": SETTINGS.get_boolean("conky-enabled"),
+            "mode": SETTINGS.get_string("conky-mode"),
+            "sections": SETTINGS.get_strv("conky-sections"),
+            "config": CONKY_CONF,
+        },
+        "settings": {k: unpack(SETTINGS.get_value(k)) for k in SCHEMA_OBJ.list_keys()},
+    }
+
+
+def status_text(s):
+    v = s["video"]
+    lines = [
+        f"extension  {s['extension']}",
+        *[f"{u:<26} {st}" for u, st in s["services"].items()],
+        f"video      {os.path.basename(v['path']) if v['path'] else '(not running)'}"
+        + (" (paused)" if v["paused"] else ""),
+        f"playlist   {v['playlist']}",
+        f"conky      {'on' if s['conky']['enabled'] else 'off'} ({s['conky']['mode']}): "
+        + ", ".join(s["conky"]["sections"]),
+    ]
+    return "\n".join(lines)
+
+
+def conky(args, as_json):
+    if not args:
+        raise Fail("conky needs a subcommand: sections, enable, disable, move, on, off, restart, config")
+    sub, rest = args[0], args[1:]
+    enabled = SETTINGS.get_strv("conky-sections")
+    if sub == "sections":
+        rows = [{"section": s, "enabled": s in enabled,
+                 "position": enabled.index(s) if s in enabled else None}
+                for s in enabled + [s for s in SECTIONS if s not in enabled]]
+        out(rows, as_json, "\n".join(
+            f"{'[x]' if r['enabled'] else '[ ]'} {r['section']}" for r in rows))
+    elif sub in ("enable", "disable"):
+        for s in rest:
+            if s not in SECTIONS:
+                raise Fail(f"unknown section {s}; one of {', '.join(SECTIONS)}")
+        if sub == "enable":
+            enabled += [s for s in rest if s not in enabled]
+        else:
+            enabled = [s for s in enabled if s not in rest]
+        set_key("conky-sections", GLib.Variant("as", enabled))
+        out(enabled, as_json, ", ".join(enabled))
+    elif sub == "move":
+        if len(rest) != 2 or rest[0] not in enabled:
+            raise Fail("usage: conky move SECTION INDEX (the section must be enabled)")
+        enabled.remove(rest[0])
+        enabled.insert(max(0, min(int(rest[1]), len(enabled))), rest[0])
+        set_key("conky-sections", GLib.Variant("as", enabled))
+        out(enabled, as_json, ", ".join(enabled))
+    elif sub in ("on", "off"):
+        set_key("conky-enabled", GLib.Variant("b", sub == "on"))
+    elif sub == "restart":
+        subprocess.run(["systemctl", "--user", "restart", "aerial-conky.service"], check=True)
+    elif sub == "config":
+        try:
+            print(open(CONKY_CONF).read(), end="")
+        except FileNotFoundError:
+            raise Fail(f"{CONKY_CONF} not written yet (is the extension enabled?)")
+    else:
+        raise Fail(f"unknown conky subcommand {sub}")
+
+
+def main(argv):
+    as_json = "--json" in argv
+    argv = [a for a in argv if a != "--json"]
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        return 0
+    cmd, args = argv[0], argv[1:]
+    if cmd == "status":
+        s = status()
+        out(s, as_json, status_text(s))
+    elif cmd == "keys":
+        rows = [key_info(k) for k in sorted(SCHEMA_OBJ.list_keys())]
+        out(rows, as_json, "\n".join(
+            f"{r['key']:<22} {json.dumps(r['value'], ensure_ascii=False):<30} {r['summary']}"
+            + (f" {r['choices']}" if "choices" in r else "")
+            + (f" {r['range'][0]}..{r['range'][1]}" if "range" in r else "")
+            for r in rows))
+    elif cmd == "get":
+        if len(args) != 1:
+            raise Fail("usage: get KEY")
+        if args[0] not in SCHEMA_OBJ.list_keys():
+            raise Fail(f"unknown key {args[0]}; see `aerial-wallpaper keys`")
+        info = key_info(args[0])
+        out(info, as_json, json.dumps(info["value"], ensure_ascii=False)
+            if not isinstance(info["value"], str) else info["value"])
+    elif cmd == "set":
+        if len(args) < 2:
+            raise Fail("usage: set KEY VALUE...")
+        if args[0] not in SCHEMA_OBJ.list_keys():
+            raise Fail(f"unknown key {args[0]}; see `aerial-wallpaper keys`")
+        if args[0] == "playlist" and args[1] and args[1] not in playlists():
+            raise Fail(f"no playlist {args[1]}; one of: {', '.join(playlists()) or '(none)'}")
+        set_key(args[0], parse_value(args[0], args[1:]))
+        out(key_info(args[0]), as_json, f"{args[0]} = {json.dumps(unpack(SETTINGS.get_value(args[0])), ensure_ascii=False)}")
+    elif cmd == "reset":
+        keys = SCHEMA_OBJ.list_keys() if args == ["--all"] else args
+        for k in keys:
+            if k not in SCHEMA_OBJ.list_keys():
+                raise Fail(f"unknown key {k}")
+            SETTINGS.reset(k)
+        Gio.Settings.sync()
+    elif cmd == "playlists":
+        current = SETTINGS.get_string("playlist")
+        names = playlists()
+        out(names, as_json, "\n".join(f"{'*' if n == current else ' '} {n}" for n in names) or "(none)")
+    elif cmd in ("next", "prev"):
+        mpv(["playlist-next" if cmd == "next" else "playlist-prev", "force"])
+    elif cmd == "now":
+        path = mpv(["get_property", "path"])
+        out({"path": path}, as_json, path)
+    elif cmd == "conky":
+        conky(args, as_json)
+    elif cmd == "prefs":
+        subprocess.run(["gnome-extensions", "prefs", UUID], check=True)
+    elif cmd == "log":
+        n = args[1] if args[:1] == ["-n"] and len(args) > 1 else "50"
+        subprocess.run(["journalctl", "--user", "-b", "--no-pager", "-n", n, "-g", UUID, "_COMM=gnome-shell"])
+        subprocess.run(["journalctl", "--user", "-b", "--no-pager", "-n", n, *[f"--unit={u}" for u in UNITS]])
+    else:
+        raise Fail(f"unknown command {cmd}; see `aerial-wallpaper --help`")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except Fail as e:
+        print(f"aerial-wallpaper: {e}", file=sys.stderr)
+        sys.exit(2)

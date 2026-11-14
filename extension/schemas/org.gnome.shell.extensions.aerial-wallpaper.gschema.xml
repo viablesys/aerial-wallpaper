@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Settings for aerial-wallpaper@viablesys. Every key is also reachable from the
+     aerial-wallpaper CLI (bin/aerial-wallpaper) and from gsettings. -->
+<schemalist>
+  <schema id="org.gnome.shell.extensions.aerial-wallpaper" path="/org/gnome/shell/extensions/aerial-wallpaper/">
+
+    <!-- Wallpaper -->
+    <key name="playlist" type="s">
+      <default>''</default>
+      <summary>Playlist</summary>
+      <description>Name of a playlist in ~/Videos/aerial/.meta/playlists/ (without .txt). Empty: the launcher default (.meta/default). Changing it restarts the wallpaper.</description>
+    </key>
+    <key name="pause-when-covered" type="b">
+      <default>true</default>
+      <summary>Pause when covered</summary>
+      <description>Pause the video while a fullscreen or fully maximized window covers the primary monitor. It always pauses while the screen is blanked.</description>
+    </key>
+    <key name="overview-video" type="b">
+      <default>true</default>
+      <summary>Video in the overview</summary>
+      <description>Show the live video as the workspace background in the overview instead of the static wallpaper.</description>
+    </key>
+    <key name="widget-classes" type="as">
+      <default>['AerialConky']</default>
+      <summary>Widget windows</summary>
+      <description>Window classes (Wayland app ids or X11 WM_CLASS) handled as desktop widgets: kept just above the video and below every other window, on all workspaces, out of alt-tab, the overview and window lists. AerialConky is the extension's own Conky.</description>
+    </key>
+
+    <!-- Conky -->
+    <key name="conky-enabled" type="b">
+      <default>false</default>
+      <summary>Conky panel</summary>
+      <description>Run the Conky panel (aerial-conky.service) while the extension is enabled.</description>
+    </key>
+    <key name="conky-mode" type="s">
+      <choices><choice value="generated"/><choice value="custom"/></choices>
+      <default>'generated'</default>
+      <summary>Conky config source</summary>
+      <description>generated: built from the conky-* settings. custom: the Lua config at conky-custom-path, with the window settings the extension needs layered on top.</description>
+    </key>
+    <key name="conky-custom-path" type="s">
+      <default>''</default>
+      <summary>Custom Conky config</summary>
+      <description>Path to your own conky.conf, used when conky-mode is custom. ~ is expanded.</description>
+    </key>
+    <key name="conky-position" type="s">
+      <choices>
+        <choice value="top-left"/><choice value="top-center"/><choice value="top-right"/>
+        <choice value="middle-left"/><choice value="center"/><choice value="middle-right"/>
+        <choice value="bottom-left"/><choice value="bottom-center"/><choice value="bottom-right"/>
+      </choices>
+      <default>'top-right'</default>
+      <summary>Position</summary>
+      <description>Where the panel sits on the primary monitor's work area (inside the top bar and docks).</description>
+    </key>
+    <key name="conky-margin-x" type="i">
+      <range min="0" max="2000"/>
+      <default>40</default>
+      <summary>Horizontal margin</summary>
+      <description>Pixels between the panel and the left or right edge of the work area.</description>
+    </key>
+    <key name="conky-margin-y" type="i">
+      <range min="0" max="2000"/>
+      <default>40</default>
+      <summary>Vertical margin</summary>
+      <description>Pixels between the panel and the top or bottom edge of the work area.</description>
+    </key>
+    <key name="conky-width" type="i">
+      <range min="100" max="3000"/>
+      <default>380</default>
+      <summary>Minimum width</summary>
+      <description>Minimum panel width in pixels; also the width of bars and graphs.</description>
+    </key>
+    <key name="conky-font" type="s">
+      <default>'DejaVu Sans Mono 12'</default>
+      <summary>Font</summary>
+      <description>Pango font description, for example "DejaVu Sans Mono 12".</description>
+    </key>
+    <key name="conky-color" type="s">
+      <default>'#e6e6e6'</default>
+      <summary>Text colour</summary>
+      <description>Text colour as #rrggbb.</description>
+    </key>
+    <key name="conky-accent-color" type="s">
+      <default>'#7fb8ff'</default>
+      <summary>Accent colour</summary>
+      <description>Colour of headings, bars and graphs, as #rrggbb.</description>
+    </key>
+    <key name="conky-label-color" type="s">
+      <default>'#8a8f98'</default>
+      <summary>Label colour</summary>
+      <description>Colour of labels, as #rrggbb.</description>
+    </key>
+    <key name="conky-background" type="s">
+      <default>'#000000'</default>
+      <summary>Background colour</summary>
+      <description>Panel background as #rrggbb; see conky-opacity.</description>
+    </key>
+    <key name="conky-opacity" type="d">
+      <range min="0" max="1"/>
+      <default>0.45</default>
+      <summary>Background opacity</summary>
+      <description>0 is fully transparent, 1 is opaque.</description>
+    </key>
+    <key name="conky-interval" type="d">
+      <range min="0.5" max="60"/>
+      <default>2</default>
+      <summary>Update interval</summary>
+      <description>Seconds between updates.</description>
+    </key>
+    <key name="conky-graphs" type="b">
+      <default>true</default>
+      <summary>Graphs</summary>
+      <description>Draw history graphs for CPU and network; off draws bars only.</description>
+    </key>
+    <key name="conky-sections" type="as">
+      <default>['header', 'cpu', 'memory', 'gpu', 'disks', 'network', 'processes', 'aerial']</default>
+      <summary>Sections</summary>
+      <description>Sections shown, in order. Available: header, clock, system, cpu, cores, memory, gpu, disks, network, processes, aerial, custom.</description>
+    </key>
+    <key name="conky-disks" type="as">
+      <default>['/', '/home']</default>
+      <summary>Disks</summary>
+      <description>Mount points shown in the disks section.</description>
+    </key>
+    <key name="conky-interface" type="s">
+      <default>''</default>
+      <summary>Network interface</summary>
+      <description>Interface for the network section. Empty: the default-route interface at the time the config is written.</description>
+    </key>
+    <key name="conky-process-count" type="i">
+      <range min="1" max="10"/>
+      <default>5</default>
+      <summary>Processes</summary>
+      <description>Rows in the processes section.</description>
+    </key>
+    <key name="conky-custom-text" type="s">
+      <default>''</default>
+      <summary>Custom text</summary>
+      <description>Raw Conky text for the custom section (Conky variables allowed).</description>
+    </key>
+  </schema>
+</schemalist>

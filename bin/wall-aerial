@@ -9,6 +9,12 @@ meta=$root/.meta
 all=(Space Underwater Cities Landscapes)
 ids() { sed 's/#.*//; s/[[:space:]]*$//' "$1" | grep .; }  # pattern lines, comments stripped
 args=("$@")
+# Wallpaper mode with no args: the extension's playlist setting, if set.
+if [ ${#args[@]} -eq 0 ] && [ "${AERIAL_MODE:-}" = wallpaper ]; then
+  schemas=$(dirname "$(readlink -f "$0")")/../extension/schemas
+  p=$(gsettings --schemadir "$schemas" get org.gnome.shell.extensions.aerial-wallpaper playlist 2>/dev/null | tr -d "'")
+  [ -n "$p" ] && args=("$p")
+fi
 [ ${#args[@]} -eq 0 ] && [ -s "$meta/default" ] && read -r -a args < "$meta/default"
 playlist=
 if [ ${#args[@]} -eq 1 ] && [ -f "$meta/playlists/${args[0]}.txt" ]; then
