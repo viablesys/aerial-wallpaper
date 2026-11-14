@@ -78,6 +78,23 @@ function hwmonIndex(names) {
     return null;
 }
 
+// Groups mount points by the filesystem they are on (mountinfo's major:minor), so Btrfs subvolumes
+// such as / and /home, which report the same used/size, get one row. Unknown mounts stay alone.
+function groupMounts(mounts) {
+    const devs = new Map();
+    for (const line of readText('/proc/self/mountinfo')?.split('\n') ?? []) {
+        const f = line.split(' ');
+        if (f.length > 4)
+            devs.set(f[4].replace(/\\040/g, ' '), f[2]);
+    }
+    const groups = new Map();
+    for (const mount of mounts) {
+        const key = devs.get(mount) ?? `mount:${mount}`;
+        groups.set(key, [...groups.get(key) ?? [], mount]);
+    }
+    return [...groups.values()];
+}
+
 function cpuCount() {
     const text = readText('/proc/cpuinfo') ?? '';
     return Math.max(1, (text.match(/^processor\s*:/gm) ?? []).length);
@@ -147,16 +164,21 @@ export function buildConfig(settings) {
             return [
                 heading('GPU', `\${execi 600 ${q('name')} | head -n1}`),
                 `${label('Load')} \${execi 5 ${q('utilization.gpu')} | head -n1}%` +
-                    `\${goto ${pad + half}}${label('Temp')} \${execi 5 ${q('temperature.gpu')} | head -n1}°C`,
+                    // Recent drivers report temperature.gpu with decimals ("40.03"); round to match the CPU.
+                    `\${goto ${pad + half}}${label('Temp')} \${execi 5 ${q('temperature.gpu')} | head -n1 | xargs printf '%.0f'}°C`,
                 `${label('VRAM')} \${execi 5 ${q('memory.used,memory.total')} | head -n1 | sed 's/, / \\/ /'} MiB` +
                     `\${alignr}\${execi 5 ${q('power.draw')} | head -n1} W`,
                 `\${color0}\${execibar 5 ${q('utilization.gpu')} | head -n1}\${color}`,
             ];
         },
         disks: () => {
-            const rows = [heading('Disks', `${label('r')} \${diskio_read}  ${label('w')} \${diskio_write}`)];
-            for (const mount of settings.get_strv('conky-disks')) {
-                rows.push(`${label(mount)}\${alignr}\${fs_used ${mount}} / \${fs_size ${mount}}`);
+            const rows = [
+                heading('Disks'),
+                `${label('Read')} \${diskio_read}\${goto ${pad + half}}${label('Write')} \${diskio_write}`,
+            ];
+            for (const group of groupMounts(settings.get_strv('conky-disks'))) {
+                const mount = group[0];
+                rows.push(`${label(group.join(' · '))}\${alignr}\${fs_used ${mount}} / \${fs_size ${mount}}`);
                 rows.push(`\${color0}\${fs_bar 6 ${mount}}\${color}`);
             }
             return rows;
