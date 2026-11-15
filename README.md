@@ -18,8 +18,23 @@ The same panel restyled and moved from the CLI (`aerial-wallpaper set conky-posi
 |---|---|---|
 | ![Preferences: Wallpaper](docs/screenshots/prefs-wallpaper.png) | ![Preferences: Widgets](docs/screenshots/prefs-widgets.png) | ![Preferences: CLI](docs/screenshots/prefs-cli.png) |
 
+Two monitors, each with its own video, playlist and Conky panel: the 4K primary plays the default playlist with
+the full panel; the 1080p monitor plays the `Space` category with a panel of just the clock and the current video
+(`aerial-wallpaper monitor Meta-1 set playlist Space conky true conky-position bottom-left conky-sections clock,aerial`):
+
+![Two monitors: a video and a panel on each](docs/screenshots/multimon-desktop.jpg)
+
+<p>
+<img src="docs/screenshots/multimon-panel.jpg" alt="The second monitor's panel: clock and current video" width="300">
+<img src="docs/screenshots/prefs-monitors.png" alt="Preferences: Monitors page" width="380">
+</p>
+
+The Monitors page sets video, playlist, panel and panel position per monitor (shown after the second monitor's
+video was switched off from the CLI); every other `conky-*` key can be overridden per monitor from the CLI.
+
 Screenshots come from `tests/conky-test.sh` (headless shell, 3840x2160 virtual monitor; the black window is a
-plain mpv window used to check stacking).
+plain mpv window used to check stacking) and `tests/multimon-test.sh` (two virtual monitors, `Meta-0` 3840x2160
+and `Meta-1` 1920x1080).
 
 - `extension/` — GNOME Shell extension `aerial-wallpaper@viablesys`. It runs one mpv per monitor that plays
   (`aerial-wallpaper@MONITOR.service`, MONITOR = the connector, e.g. `DP-1`), finds each mpv window (Wayland app

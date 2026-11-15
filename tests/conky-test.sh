@@ -11,7 +11,7 @@ ln -s "$repo/extension" "$T/data/gnome-shell/extensions/aerial-wallpaper@viables
 export XDG_CONFIG_HOME=$T/config XDG_DATA_HOME=$T/data XDG_RUNTIME_DIR=$T/run AERIAL_WALLPAPER_NO_SYSTEMD=1 AERIAL_WALLPAPER_DEBUG=1
 # The extension starts wall-aerial and Conky itself (no systemd in the test); use this checkout's.
 export PATH=$repo/bin:$PATH
-export AERIAL_WALLPAPER_TEST_SHOTS=14:desktop,26:moved,44:prefs-wallpaper,50:prefs-conky,56:prefs-monitors,62:prefs-widgets,68:prefs-cli AERIAL_WALLPAPER_TEST_REPORT=13 AERIAL_WALLPAPER_TEST_PAGES=6 repo
+export AERIAL_WALLPAPER_TEST_SHOTS=14:desktop,26:moved,62:prefs-wallpaper,68:prefs-conky,74:prefs-monitors,80:prefs-widgets,86:prefs-cli AERIAL_WALLPAPER_TEST_REPORT=13 AERIAL_WALLPAPER_TEST_PAGES=6 repo
 unset WAYLAND_DISPLAY DISPLAY NOTIFY_SOCKET
 exec dbus-run-session -- bash -c '
   cli() { "$repo/bin/aerial-wallpaper" "$@"; }
@@ -44,7 +44,7 @@ exec dbus-run-session -- bash -c '
   grep -a -iE "conky.*(reload|config file)" "$XDG_RUNTIME_DIR/shell.log" | head -3 | sed "s/^/   conky: /"
   echo "== conky errors:"; grep -a "conky" "$XDG_RUNTIME_DIR/shell.log" | grep -a -iE "\[(error|warn)" | head -5 || true
   sleep 3
-  echo "== prefs window"; gnome-extensions prefs aerial-wallpaper@viablesys > "$XDG_RUNTIME_DIR/prefs.log" 2>&1 & sleep 52
+  echo "== prefs window"; gnome-extensions prefs aerial-wallpaper@viablesys > "$XDG_RUNTIME_DIR/prefs.log" 2>&1 & sleep 70
   grep -a -iE "error|exception|critical" "$XDG_RUNTIME_DIR/prefs.log" "$XDG_RUNTIME_DIR/shell.log" | grep -aiE "prefs|aerial|conky|Extensions" | grep -v "invalid window geometry" | head -10 || true
   echo "== screenshots"; log | grep screenshot
   echo "== extension errors:"; grep -a -iE "error|exception|warn|critical" "$XDG_RUNTIME_DIR/shell.log" | grep -a -iE "aerial|conky|is_ready" | grep -v "invalid window geometry" | head -10 || echo "   (none)"
