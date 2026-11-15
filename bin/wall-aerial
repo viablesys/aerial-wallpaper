@@ -3,7 +3,7 @@
 # Args: a playlist name from .meta/playlists/<name>.txt, or categories (Space Underwater Cities Landscapes), or "all".
 # No args: the name in .meta/default (falls back to all categories).
 # q or Esc quits, > / < skip.
-# Each video start is logged to .meta/played.log; shot IDs listed in .meta/skip.txt are left out.
+# Each video start is logged to .meta/played.log (bin/log-played.lua); shot IDs listed in .meta/skip.txt are left out.
 root=~/Videos/aerial
 meta=$root/.meta
 all=(Space Underwater Cities Landscapes)
@@ -52,4 +52,4 @@ else
 fi
 exec mpv "${win[@]}" "${extra[@]}" --shuffle --loop-playlist=inf --no-audio --hwdec=auto-safe --background-color=#000000 --force-window=immediate --no-osc --osd-level=0 \
   --really-quiet \
-  --input-ipc-server="$sock" --script="$meta/log-played.lua" "${files[@]}"
+  --input-ipc-server="$sock" --script="$here/log-played.lua" "${files[@]}"

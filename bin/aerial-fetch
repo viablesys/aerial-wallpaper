@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+"""Download Apple's Aerial screensaver videos (4K SDR) into ~/Videos/aerial/<Category>/.
+
+The catalogue is entries.json from Apple's tvOS Aerial resources archive; it is fetched into
+~/Videos/aerial/.meta/ on the first run. Files already present are skipped, so re-running resumes.
+Args: categories to fetch (Space Underwater Cities Landscapes); none = all, darkest first.
+"""
+import json, os, subprocess, sys, tarfile
+root = os.path.expanduser("~/Videos/aerial")
+meta = f"{root}/.meta"
+RESOURCES = "https://sylvan.apple.com/Aerials/resources-16.tar"
+os.makedirs(meta, exist_ok=True)
+if not os.path.exists(f"{meta}/entries.json"):
+    # sylvan.apple.com's certificate chain doesn't validate with curl, hence -k.
+    subprocess.run(["curl", "-skfL", "--retry", "3", "-o", f"{meta}/resources.tar", RESOURCES], check=True)
+    with tarfile.open(f"{meta}/resources.tar") as t:
+        t.extract("entries.json", meta, filter="data")
+e = json.load(open(f"{meta}/entries.json"))
+cat = {c["id"]: c["localizedNameKey"].replace("AerialCategory", "") for c in e["categories"]}
+# Space and Underwater first: darkest footage, best on a projector.
+order = {"Space": 0, "Underwater": 1, "Cities": 2, "Landscapes": 3}
+wanted = set(sys.argv[1:])
+assets = sorted(e["assets"], key=lambda a: order.get(cat.get((a.get("categories") or ["?"])[0], "?"), 9))
+for a in assets:
+    c = cat.get((a.get("categories") or ["?"])[0], "Other")
+    if wanted and c not in wanted:
+        continue
+    name = "".join(ch if ch.isalnum() or ch in " -" else "_" for ch in a["accessibilityLabel"]).strip()
+    dest = f"{root}/{c}/{name} [{a['shotID']}].mov"
+    if os.path.exists(dest):
+        continue
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    # Same certificate problem for the video files.
+    r = subprocess.run(["curl", "-skfL", "--retry", "3", "-o", dest + ".part", a["url-4K-SDR"]])
+    if r.returncode == 0:
+        os.rename(dest + ".part", dest)
+        print("ok", c, name, flush=True)
+    else:
+        print("FAIL", c, name, flush=True)
