@@ -1,6 +1,8 @@
 # aerial-wallpaper
 
 Plays the Aerial videos (`wall-aerial`, mpv) as the GNOME desktop background on GNOME Shell 51 (Wayland).
+The videos are not in the repo: `bin/aerial-fetch` downloads them from Apple (about 45 GB); see
+[aerial.md](aerial.md) for the library, playlists and skip list, and [CLAUDE.md](CLAUDE.md) for installing.
 
 ![Desktop: Aerial video with the Conky panel, under a normal window](docs/screenshots/desktop.jpg)
 
