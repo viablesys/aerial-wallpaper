@@ -5,20 +5,31 @@ Every setting the preferences window shows is here too, so scripts and agents ca
 Settings live in GSettings (schema org.gnome.shell.extensions.aerial-wallpaper); the running
 extension applies changes immediately. Add --json to any read command for machine output.
 
-  status                     extension, services, current video, Conky
+  status                     extension, services, each monitor's video and panel
   keys                       every setting: type, value, default, allowed values, description
   get KEY                    one setting
   set KEY VALUE...           change a setting (lists: several values, or one JSON array)
   reset KEY | --all          back to the default
-  playlists                  playlists in ~/Videos/aerial/.meta/playlists/
+  playlists                  playlists in ~/Videos/aerial/.meta/playlists/ (a category name works too)
+  monitors                   connected monitors: connector, primary, video, playlist, panel
+  monitor M show             M's overrides (M = a connector such as DP-1, or "primary")
+  monitor M set KEY VALUE [KEY VALUE...]
+                             override for M: aerial, conky (true/false), playlist, pause-when-covered,
+                             or any conky-* key except conky-enabled
+  monitor M unset KEY...     drop overrides (M falls back to the global value)
+  monitor M reset            drop all of M's overrides
   next | prev | now          skip the video, or print the current one
-  conky sections             all sections, in order, enabled or not
+  conky sections             all sections, in order, enabled or not (the global list)
   conky enable|disable SECTION...
   conky move SECTION INDEX   reorder (0 = first)
-  conky on|off|restart       run or stop the panel, or restart it
-  conky config               print the generated Conky config
+  conky on|off|restart       run or stop the panels, or restart them
+  conky config               print a panel's generated Conky config
   prefs                      open the preferences window
   log [-n N]                 recent log lines from the extension and its services
+
+--monitor M picks the monitor for next, prev, now and conky config (default: the primary monitor).
+Without per-monitor settings only the primary monitor plays, as with a single monitor; see the
+`monitors` key (`aerial-wallpaper keys`) for how entries combine.
 """
 import json
 import os
@@ -34,13 +45,15 @@ from gi.repository import Gio, GLib  # noqa: E402
 
 UUID = "aerial-wallpaper@viablesys"
 SCHEMA = "org.gnome.shell.extensions.aerial-wallpaper"
-UNITS = ["aerial-wallpaper.service", "aerial-conky.service"]
+UNIT_PATTERNS = ["aerial-wallpaper@*.service", "aerial-conky@*.service"]
+CATEGORIES = ["Space", "Underwater", "Cities", "Landscapes"]
 SECTIONS = ["header", "clock", "system", "cpu", "cores", "memory", "gpu", "disks",
             "network", "processes", "aerial", "custom"]
 REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 PLAYLISTS = os.path.expanduser("~/Videos/aerial/.meta/playlists")
-CONKY_CONF = os.path.join(GLib.get_user_config_dir(), "aerial-wallpaper", "conky.conf")
-MPV_SOCKET = os.path.join(GLib.get_user_runtime_dir(), "aerial-mpv.sock")
+STATE = os.path.join(GLib.get_user_runtime_dir(), "aerial-wallpaper", "state.json")
+# Entry keys that are not global settings (extension/monitors.js OWN_KEYS).
+OWN_KEYS = {"aerial": "b", "conky": "b"}
 
 
 class Fail(Exception):
@@ -93,9 +106,7 @@ def parse_value(name, args):
         raise Fail(f"{name} takes one value")
     raw = args[0]
     if t == "b":
-        if raw.lower() not in ("true", "false", "on", "off", "yes", "no", "1", "0"):
-            raise Fail(f"{name} is a boolean: true or false")
-        return GLib.Variant("b", raw.lower() in ("true", "on", "yes", "1"))
+        return parse_bool(name, raw)
     if t == "i":
         return GLib.Variant("i", int(raw))
     if t == "d":
@@ -105,6 +116,12 @@ def parse_value(name, args):
             raw = raw.replace("\\n", "\n")
         return GLib.Variant("s", raw)
     raise Fail(f"unsupported type {t}")
+
+
+def parse_bool(name, raw):
+    if raw.lower() not in ("true", "false", "on", "off", "yes", "no", "1", "0"):
+        raise Fail(f"{name} is a boolean: true or false")
+    return GLib.Variant("b", raw.lower() in ("true", "on", "yes", "1"))
 
 
 def set_key(name, variant):
@@ -134,12 +151,35 @@ def run(cmd):
     return r.stdout.strip()
 
 
-def mpv(command):
+def state():
+    """The layout the running extension wrote: {"monitors": [...]}, or None."""
+    try:
+        with open(STATE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def find_monitor(name):
+    """The state entry for a connector or "primary" (None: the primary monitor)."""
+    s = state()
+    if s is None:
+        raise Fail(f"no {STATE}: is the extension enabled?")
+    for m in s["monitors"]:
+        if (name in (None, "primary") and m["primary"]) or m["connector"] == name:
+            return m
+    raise Fail(f"no connected monitor {name}; connected: {', '.join(m['connector'] for m in s['monitors'])}")
+
+
+def mpv(command, monitor=None):
+    m = find_monitor(monitor)
+    if not m["video"]:
+        raise Fail(f"{m['connector']} plays no video")
     s = socket.socket(socket.AF_UNIX)
     try:
-        s.connect(MPV_SOCKET)
+        s.connect(m["socket"])
     except OSError as e:
-        raise Fail(f"the wallpaper video is not running ({e.strerror})")
+        raise Fail(f"the video on {m['connector']} is not running ({e.strerror})")
     with s:
         s.sendall((json.dumps({"command": command}) + "\n").encode())
         for line in s.makefile():
@@ -151,9 +191,9 @@ def mpv(command):
     return None
 
 
-def mpv_or_none(command):
+def mpv_or_none(command, monitor=None):
     try:
-        return mpv(command)
+        return mpv(command, monitor)
     except (Fail, OSError):
         return None
 
@@ -165,44 +205,126 @@ def playlists():
         return []
 
 
+def playlist_ok(name):
+    return not name or name in playlists() or name in CATEGORIES
+
+
+def monitor_rows():
+    s = state()
+    if s is None:
+        raise Fail(f"no {STATE}: is the extension enabled?")
+    rows = []
+    for m in s["monitors"]:
+        row = dict(m)
+        if m["video"]:
+            row["path"] = mpv_or_none(["get_property", "path"], m["connector"])
+            row["paused"] = mpv_or_none(["get_property", "pause"], m["connector"])
+        rows.append(row)
+    return rows
+
+
+def monitors_text(rows):
+    lines = []
+    for r in rows:
+        x, y, w, h = r["geometry"]
+        video = "off"
+        if r["video"]:
+            video = (os.path.basename(r["path"]) if r.get("path") else "(not running)") + (" (paused)" if r.get("paused") else "")
+        lines.append(f"{r['connector']}{' (primary)' if r['primary'] else ''}  {w}x{h}+{x}+{y}\n"
+                     f"  video     {video}\n"
+                     f"  playlist  {r['playlist'] or '(default)'}\n"
+                     f"  conky     {'on' if r['conky'] else 'off'}")
+    return "\n".join(lines)
+
+
 def status():
     info = run(["gnome-extensions", "info", UUID])
-    state = next((line.split(":", 1)[1].strip() for line in info.splitlines()
-                  if line.strip().startswith("State:")), "NOT INSTALLED")
-    path = mpv_or_none(["get_property", "path"])
+    ext = next((line.split(":", 1)[1].strip() for line in info.splitlines()
+                if line.strip().startswith("State:")), "NOT INSTALLED")
+    units = run(["systemctl", "--user", "list-units", "--all", "--no-legend", "--plain", *UNIT_PATTERNS])
+    try:
+        monitors = monitor_rows()
+    except Fail:
+        monitors = []
     return {
-        "extension": state,
-        "services": {u: run(["systemctl", "--user", "is-active", u]) for u in UNITS},
-        "video": {
-            "path": path,
-            "paused": mpv_or_none(["get_property", "pause"]),
-            "playlist": SETTINGS.get_string("playlist") or "(default)",
-        },
+        "extension": ext,
+        "services": {line.split()[0]: line.split()[2] for line in units.splitlines() if line.strip()},
+        "monitors": monitors,
         "conky": {
             "enabled": SETTINGS.get_boolean("conky-enabled"),
             "mode": SETTINGS.get_string("conky-mode"),
             "sections": SETTINGS.get_strv("conky-sections"),
-            "config": CONKY_CONF,
         },
         "settings": {k: unpack(SETTINGS.get_value(k)) for k in SCHEMA_OBJ.list_keys()},
     }
 
 
 def status_text(s):
-    v = s["video"]
     lines = [
         f"extension  {s['extension']}",
-        *[f"{u:<26} {st}" for u, st in s["services"].items()],
-        f"video      {os.path.basename(v['path']) if v['path'] else '(not running)'}"
-        + (" (paused)" if v["paused"] else ""),
-        f"playlist   {v['playlist']}",
+        *[f"{u:<36} {st}" for u, st in s["services"].items()],
         f"conky      {'on' if s['conky']['enabled'] else 'off'} ({s['conky']['mode']}): "
         + ", ".join(s["conky"]["sections"]),
+        monitors_text(s["monitors"]) if s["monitors"] else "monitors   (no state file: is the extension enabled?)",
     ]
     return "\n".join(lines)
 
 
-def conky(args, as_json):
+def entry_type(key):
+    if key in OWN_KEYS:
+        return OWN_KEYS[key]
+    if key in ("playlist", "pause-when-covered") or (key.startswith("conky-") and key != "conky-enabled"):
+        if key in SCHEMA_OBJ.list_keys():
+            return SCHEMA_OBJ.get_key(key).get_value_type().dup_string()
+    raise Fail(f"{key} can't be set per monitor; use aerial, conky, playlist, pause-when-covered or a conky-* key")
+
+
+def write_entries(entries):
+    packed = {conn: {k: GLib.Variant(entry_type(k), v) for k, v in entry.items()}
+              for conn, entry in entries.items() if entry}
+    SETTINGS.set_value("monitors", GLib.Variant("a{sa{sv}}", packed))
+    Gio.Settings.sync()
+
+
+def monitor(args, as_json):
+    if len(args) < 2:
+        raise Fail("usage: monitor M show|set|unset|reset ... (M = a connector or primary)")
+    name, sub, rest = args[0], args[1], args[2:]
+    entries = unpack(SETTINGS.get_value("monitors"))
+    entry = entries.get(name, {})
+    if sub == "show":
+        out(entry, as_json, "\n".join(f"{k} = {json.dumps(v, ensure_ascii=False)}" for k, v in entry.items())
+            or f"{name}: no overrides")
+        return
+    if sub == "set":
+        if not rest or len(rest) % 2:
+            raise Fail("usage: monitor M set KEY VALUE [KEY VALUE...] (lists: comma separated or a JSON array)")
+        for key, raw in zip(rest[::2], rest[1::2]):
+            entry_type(key)  # rejects keys that cannot be per monitor
+            if key in OWN_KEYS:
+                variant = parse_bool(key, raw)
+            else:
+                variant = parse_value(key, [raw])
+                if not SCHEMA_OBJ.get_key(key).range_check(variant):
+                    info = key_info(key)
+                    raise Fail(f"{raw} is not allowed for {key}; allowed: {info.get('choices') or info.get('range')}")
+            if key == "playlist" and not playlist_ok(raw):
+                raise Fail(f"no playlist {raw}; one of: {', '.join(playlists() + CATEGORIES)}")
+            entry[key] = unpack(variant)
+    elif sub == "unset":
+        for key in rest:
+            entry.pop(key, None)
+    elif sub == "reset":
+        entry = {}
+    else:
+        raise Fail(f"unknown monitor subcommand {sub}; show, set, unset or reset")
+    entries[name] = entry
+    write_entries(entries)
+    out(entry, as_json, "\n".join(f"{k} = {json.dumps(v, ensure_ascii=False)}" for k, v in entry.items())
+        or f"{name}: no overrides")
+
+
+def conky(args, as_json, mon):
     if not args:
         raise Fail("conky needs a subcommand: sections, enable, disable, move, on, off, restart, config")
     sub, rest = args[0], args[1:]
@@ -233,12 +355,15 @@ def conky(args, as_json):
     elif sub in ("on", "off"):
         set_key("conky-enabled", GLib.Variant("b", sub == "on"))
     elif sub == "restart":
-        subprocess.run(["systemctl", "--user", "restart", "aerial-conky.service"], check=True)
+        subprocess.run(["systemctl", "--user", "restart", UNIT_PATTERNS[1]], check=True)
     elif sub == "config":
+        m = find_monitor(mon)
+        if not m["conky"]:
+            raise Fail(f"{m['connector']} shows no Conky panel")
         try:
-            print(open(CONKY_CONF).read(), end="")
+            print(open(m["config"]).read(), end="")
         except FileNotFoundError:
-            raise Fail(f"{CONKY_CONF} not written yet (is the extension enabled?)")
+            raise Fail(f"{m['config']} not written yet")
     else:
         raise Fail(f"unknown conky subcommand {sub}")
 
@@ -246,6 +371,13 @@ def conky(args, as_json):
 def main(argv):
     as_json = "--json" in argv
     argv = [a for a in argv if a != "--json"]
+    mon = None
+    if "--monitor" in argv:
+        i = argv.index("--monitor")
+        if i + 1 >= len(argv):
+            raise Fail("--monitor needs a connector or primary")
+        mon = argv[i + 1]
+        del argv[i:i + 2]
     if not argv or argv[0] in ("-h", "--help", "help"):
         print(__doc__.strip())
         return 0
@@ -273,8 +405,8 @@ def main(argv):
             raise Fail("usage: set KEY VALUE...")
         if args[0] not in SCHEMA_OBJ.list_keys():
             raise Fail(f"unknown key {args[0]}; see `aerial-wallpaper keys`")
-        if args[0] == "playlist" and args[1] and args[1] not in playlists():
-            raise Fail(f"no playlist {args[1]}; one of: {', '.join(playlists()) or '(none)'}")
+        if args[0] == "playlist" and not playlist_ok(args[1]):
+            raise Fail(f"no playlist {args[1]}; one of: {', '.join(playlists() + CATEGORIES)}")
         set_key(args[0], parse_value(args[0], args[1:]))
         out(key_info(args[0]), as_json, f"{args[0]} = {json.dumps(unpack(SETTINGS.get_value(args[0])), ensure_ascii=False)}")
     elif cmd == "reset":
@@ -288,19 +420,24 @@ def main(argv):
         current = SETTINGS.get_string("playlist")
         names = playlists()
         out(names, as_json, "\n".join(f"{'*' if n == current else ' '} {n}" for n in names) or "(none)")
+    elif cmd == "monitors":
+        rows = monitor_rows()
+        out(rows, as_json, monitors_text(rows))
+    elif cmd == "monitor":
+        monitor(args, as_json)
     elif cmd in ("next", "prev"):
-        mpv(["playlist-next" if cmd == "next" else "playlist-prev", "force"])
+        mpv(["playlist-next" if cmd == "next" else "playlist-prev", "force"], mon)
     elif cmd == "now":
-        path = mpv(["get_property", "path"])
+        path = mpv(["get_property", "path"], mon)
         out({"path": path}, as_json, path)
     elif cmd == "conky":
-        conky(args, as_json)
+        conky(args, as_json, mon)
     elif cmd == "prefs":
         subprocess.run(["gnome-extensions", "prefs", UUID], check=True)
     elif cmd == "log":
         n = args[1] if args[:1] == ["-n"] and len(args) > 1 else "50"
         subprocess.run(["journalctl", "--user", "-b", "--no-pager", "-n", n, "-g", UUID, "_COMM=gnome-shell"])
-        subprocess.run(["journalctl", "--user", "-b", "--no-pager", "-n", n, *[f"--unit={u}" for u in UNITS]])
+        subprocess.run(["journalctl", "--user", "-b", "--no-pager", "-n", n, *[f"--unit={u}" for u in UNIT_PATTERNS]])
     else:
         raise Fail(f"unknown command {cmd}; see `aerial-wallpaper --help`")
     return 0

@@ -1,11 +1,11 @@
 [Unit]
-Description=Conky panel over the Aerial wallpaper (started and stopped by the aerial-wallpaper@viablesys extension)
+Description=Conky panel over the Aerial wallpaper on monitor %i (started and stopped by the aerial-wallpaper@viablesys extension)
 PartOf=graphical-session.target
 After=graphical-session.target
 
 [Service]
 Type=simple
 # Native Wayland Conky; the config is written by the extension from its settings.
-ExecStart=/usr/bin/conky --config=%h/.config/aerial-wallpaper/conky.conf
+ExecStart=/usr/bin/conky --config=%h/.config/aerial-wallpaper/conky-%i.conf
 Restart=on-failure
 RestartSec=5

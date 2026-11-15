@@ -13,7 +13,7 @@
     <key name="pause-when-covered" type="b">
       <default>true</default>
       <summary>Pause when covered</summary>
-      <description>Pause the video while a fullscreen or fully maximized window covers the primary monitor. It always pauses while the screen is blanked.</description>
+      <description>Pause a monitor's video while a fullscreen or fully maximized window covers that monitor. It always pauses while the screen is blanked.</description>
     </key>
     <key name="overview-video" type="b">
       <default>true</default>
@@ -23,14 +23,21 @@
     <key name="widget-classes" type="as">
       <default>['AerialConky']</default>
       <summary>Widget windows</summary>
-      <description>Window classes (Wayland app ids or X11 WM_CLASS) handled as desktop widgets: kept just above the video and below every other window, on all workspaces, out of alt-tab, the overview and window lists. AerialConky is the extension's own Conky.</description>
+      <description>Window classes (Wayland app ids or X11 WM_CLASS) handled as desktop widgets: kept just above the video and below every other window, on all workspaces, out of alt-tab, the overview and window lists. The extension's own Conky panels (AerialConky-*) are always handled.</description>
+    </key>
+
+    <!-- Monitors -->
+    <key name="monitors" type="a{sa{sv}}">
+      <default>{}</default>
+      <summary>Per-monitor settings</summary>
+      <description>Connector name (DP-1, HDMI-A-1; see `aerial-wallpaper monitors`) or "primary" -> overrides. Keys: aerial (b, play the video there; default true once a monitor has an entry), conky (b, show a Conky panel there; default true on the primary monitor, false elsewhere), and playlist, pause-when-covered or any conky-* key except conky-enabled. The primary monitor uses the "primary" entry merged with its own connector's entry, and plays even with no entry; other monitors stay plain until they get one.</description>
     </key>
 
     <!-- Conky -->
     <key name="conky-enabled" type="b">
       <default>false</default>
       <summary>Conky panel</summary>
-      <description>Run the Conky panel (aerial-conky.service) while the extension is enabled.</description>
+      <description>Run the Conky panels (aerial-conky@MONITOR.service) while the extension is enabled. Master switch; which monitors show one is set per monitor (the primary monitor by default).</description>
     </key>
     <key name="conky-mode" type="s">
       <choices><choice value="generated"/><choice value="custom"/></choices>
@@ -51,7 +58,7 @@
       </choices>
       <default>'top-right'</default>
       <summary>Position</summary>
-      <description>Where the panel sits on the primary monitor's work area (inside the top bar and docks).</description>
+      <description>Where the panel sits on its monitor's work area (inside the top bar and docks).</description>
     </key>
     <key name="conky-margin-x" type="i">
       <range min="0" max="2000"/>

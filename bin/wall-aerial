@@ -9,9 +9,13 @@ meta=$root/.meta
 all=(Space Underwater Cities Landscapes)
 ids() { sed 's/#.*//; s/[[:space:]]*$//' "$1" | grep .; }  # pattern lines, comments stripped
 args=("$@")
+here=$(dirname "$(readlink -f "$0")")
+# Wallpaper mode, one mpv per monitor: AERIAL_INSTANCE names the monitor (socket, window app id) and
+# AERIAL_PLAYLIST is that monitor's playlist, both set by the extension (or aerial-wallpaper@.service).
+[ ${#args[@]} -eq 0 ] && [ -n "${AERIAL_PLAYLIST:-}" ] && args=("$AERIAL_PLAYLIST")
 # Wallpaper mode with no args: the extension's playlist setting, if set.
 if [ ${#args[@]} -eq 0 ] && [ "${AERIAL_MODE:-}" = wallpaper ]; then
-  schemas=$(dirname "$(readlink -f "$0")")/../extension/schemas
+  schemas=$here/../extension/schemas
   p=$(gsettings --schemadir "$schemas" get org.gnome.shell.extensions.aerial-wallpaper playlist 2>/dev/null | tr -d "'")
   [ -n "$p" ] && args=("$p")
 fi
@@ -32,13 +36,20 @@ mapfile -t files < <(for c in "${cats[@]}"; do find "$root/$c" -name '*.mov' 2>/
 # AERIAL_MODE=wallpaper: a plain window the aerial-wallpaper@viablesys GNOME extension turns into the desktop background.
 # Wallpaper mode takes no keyboard or mouse input (Alt+arrows would pan the video, the wheel would seek);
 # it is driven only over the IPC socket.
+runtime=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+sock=$runtime/aerial-mpv.sock extra=()
 if [ "${AERIAL_MODE:-}" = wallpaper ]; then
-  win=(--wayland-app-id=aerial-wallpaper --border=no --keepaspect-window=no --wayland-configure-bounds=no
+  app=aerial-wallpaper
+  if [ -n "${AERIAL_INSTANCE:-}" ]; then
+    app=aerial-wallpaper-$AERIAL_INSTANCE sock=$runtime/aerial-mpv-$AERIAL_INSTANCE.sock
+    extra=(--script="$here/aerial-now.lua")
+  fi
+  win=(--wayland-app-id=$app --border=no --keepaspect-window=no --wayland-configure-bounds=no
        --input-default-bindings=no --input-builtin-bindings=no --input-vo-keyboard=no --input-cursor=no
        --input-cursor-passthrough=yes --window-dragging=no)
 else
   win=(--fs --input-default-bindings=yes)
 fi
-exec mpv "${win[@]}" --shuffle --loop-playlist=inf --no-audio --hwdec=auto-safe --background-color=#000000 --force-window=immediate --no-osc --osd-level=0 \
+exec mpv "${win[@]}" "${extra[@]}" --shuffle --loop-playlist=inf --no-audio --hwdec=auto-safe --background-color=#000000 --force-window=immediate --no-osc --osd-level=0 \
   --really-quiet \
-  --input-ipc-server="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/aerial-mpv.sock" --script="$meta/log-played.lua" "${files[@]}"
+  --input-ipc-server="$sock" --script="$meta/log-played.lua" "${files[@]}"

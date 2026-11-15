@@ -1,4 +1,4 @@
-// Preferences window for aerial-wallpaper@viablesys: wallpaper, the Conky panel, widget windows.
+// Preferences window for aerial-wallpaper@viablesys: wallpaper, the Conky panel, monitors, widget windows.
 // Everything here is a GSettings key; bin/aerial-wallpaper exposes the same keys on the CLI.
 
 import Adw from 'gi://Adw';
@@ -10,8 +10,11 @@ import Pango from 'gi://Pango';
 import {ExtensionPreferences} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
 import * as Conky from './conky.js';
+import * as Monitors from './monitors.js';
 
 const PLAYLISTS = GLib.build_filenamev([GLib.get_home_dir(), 'Videos', 'aerial', '.meta', 'playlists']);
+// wall-aerial also takes a category name as the playlist.
+const CATEGORIES = ['Space', 'Underwater', 'Cities', 'Landscapes'];
 const POSITIONS = [
     ['top-left', 'Top left'], ['top-center', 'Top centre'], ['top-right', 'Top right'],
     ['middle-left', 'Middle left'], ['center', 'Centre'], ['middle-right', 'Middle right'],
@@ -36,8 +39,34 @@ function toHex(rgba) {
     return `#${c(rgba.red)}${c(rgba.green)}${c(rgba.blue)}`;
 }
 
-function mpvCommand(command) {
-    const path = GLib.build_filenamev([GLib.get_user_runtime_dir(), 'aerial-mpv.sock']);
+// The layout the running extension wrote ({monitors: [...]}), or null.
+function readState() {
+    try {
+        const [ok, bytes] = GLib.file_get_contents(Monitors.statePath());
+        return ok ? JSON.parse(new TextDecoder().decode(bytes)) : null;
+    } catch {
+        return null;
+    }
+}
+
+// Connected monitors: [{connector, primary}], from the extension's state, else from GDK (which
+// cannot tell which one is primary).
+function connectedMonitors() {
+    const state = readState();
+    if (state)
+        return state.monitors.map(m => ({connector: m.connector, primary: m.primary}));
+    const list = Gdk.Display.get_default().get_monitors();
+    const out = [];
+    for (let i = 0; i < list.get_n_items(); i++)
+        out.push({connector: list.get_item(i).get_connector(), primary: false});
+    return out;
+}
+
+function mpvCommand(command, connector = null) {
+    const m = readState()?.monitors.find(x => (connector ? x.connector === connector : x.primary) && x.video);
+    if (!m)
+        return;
+    const path = m.socket;
     new Gio.SocketClient().connect_async(new Gio.UnixSocketAddress({path}), null, (c, res) => {
         try {
             const conn = c.connect_finish(res);
@@ -61,13 +90,18 @@ export default class AerialWallpaperPreferences extends ExtensionPreferences {
         window.set_search_enabled(true);
         window.add(this._wallpaperPage(settings));
         window.add(this._conkyPage(settings, window));
+        window.add(this._monitorsPage(settings));
         window.add(this._widgetsPage(settings));
         window.add(this._cliPage());
-        // Test hook (headless shell): step through the pages so each can be screenshotted.
+        // Test hooks (headless shell): open on one page, or step through the pages so each can be screenshotted.
+        if (GLib.getenv('AERIAL_WALLPAPER_TEST_PAGE')) {
+            window.set_default_size(760, 1400);
+            window.set_visible_page_name(GLib.getenv('AERIAL_WALLPAPER_TEST_PAGE'));
+        }
         const step = Number(GLib.getenv('AERIAL_WALLPAPER_TEST_PAGES') || 0);
         if (step) {
             window.set_default_size(760, 2100);  // tall enough to show whole pages
-            const names = ['wallpaper', 'conky', 'widgets', 'cli'];
+            const names = ['wallpaper', 'conky', 'monitors', 'widgets', 'cli'];
             let i = 0;
             GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, step, () => {
                 window.set_visible_page_name(names[++i % names.length]);
@@ -172,15 +206,15 @@ export default class AerialWallpaperPreferences extends ExtensionPreferences {
         const video = new Adw.PreferencesGroup({title: 'Video'});
         const playlists = listPlaylists();
         video.add(this._choice(settings, 'playlist',
-            [['', 'Default'], ...playlists.map(p => [p, p])]));
+            [['', 'Default'], ...playlists.map(p => [p, p]), ...CATEGORIES.map(c => [c, `${c} (category)`])]));
         video.add(this._switch(settings, 'pause-when-covered'));
         video.add(this._switch(settings, 'overview-video'));
-        const skip = new Adw.ActionRow({title: 'Current video', subtitle: 'Skip to the previous or next video in the playlist'});
+        const skip = new Adw.ActionRow({title: 'Current video', subtitle: 'Skip to the previous or next video on the primary monitor (others: Monitors page)'});
         skip.add_suffix(this._button('Previous', () => mpvCommand(['playlist-prev', 'force'])));
         skip.add_suffix(this._button('Next', () => mpvCommand(['playlist-next', 'force'])));
         video.add(skip);
-        const restart = new Adw.ActionRow({title: 'Wallpaper service', subtitle: 'aerial-wallpaper.service'});
-        restart.add_suffix(this._button('Restart', () => systemctl('restart', 'aerial-wallpaper.service')));
+        const restart = new Adw.ActionRow({title: 'Wallpaper services', subtitle: 'aerial-wallpaper@MONITOR.service, one per monitor that plays'});
+        restart.add_suffix(this._button('Restart', () => systemctl('restart', 'aerial-wallpaper@*.service')));
         video.add(restart);
         page.add(video);
         return page;
@@ -211,9 +245,11 @@ export default class AerialWallpaperPreferences extends ExtensionPreferences {
         showCustom();
         settings.connect('changed::conky-mode', showCustom);
         panel.add(custom);
-        const actions = new Adw.ActionRow({title: 'Config', subtitle: Conky.configPath()});
+        const actions = new Adw.ActionRow({
+            title: 'Config', subtitle: `${Conky.configPath('MONITOR')}; these are the defaults, overridable per monitor`,
+        });
         actions.add_suffix(this._button('Show', () => this._showConfig(settings, window)));
-        actions.add_suffix(this._button('Restart Conky', () => systemctl('restart', Conky.UNIT)));
+        actions.add_suffix(this._button('Restart Conky', () => systemctl('restart', Conky.UNIT_PATTERN)));
         panel.add(actions);
         page.add(panel);
 
@@ -312,11 +348,104 @@ export default class AerialWallpaperPreferences extends ExtensionPreferences {
 
     _showConfig(settings, window) {
         const view = new Gtk.TextView({monospace: true, editable: false, top_margin: 12, left_margin: 12, right_margin: 12, bottom_margin: 12});
-        view.buffer.set_text(Conky.buildConfig(settings), -1);
+        // The primary monitor's panel, the one most configs are about.
+        const primary = connectedMonitors().find(m => m.primary)?.connector ?? Monitors.PRIMARY;
+        const settingsFor = Monitors.resolve(settings, Monitors.readEntries(settings), primary, true).settings;
+        view.buffer.set_text(Conky.buildConfig(settingsFor, Monitors.instanceId(primary)), -1);
         const toolbar = new Adw.ToolbarView({content: new Gtk.ScrolledWindow({child: view, vexpand: true})});
         toolbar.add_top_bar(new Adw.HeaderBar());
         const dialog = new Adw.Dialog({title: 'Generated Conky config', content_width: 760, content_height: 640, child: toolbar});
         dialog.present(window);
+    }
+
+    // One group per monitor (connected, or with settings): video, playlist, Conky panel and its
+    // position. Edits go to the monitor's connector entry; other keys through the CLI.
+    _monitorsPage(settings) {
+        const page = new Adw.PreferencesPage({name: 'monitors', title: 'Monitors', icon_name: 'video-display-symbolic'});
+        const intro = new Adw.PreferencesGroup({
+            title: 'Monitors',
+            description: 'What each monitor shows. Without settings here only the primary monitor plays. ' +
+                'Any conky-* setting can be overridden per monitor from the CLI: aerial-wallpaper monitor M set KEY VALUE.',
+        });
+        page.add(intro);
+
+        const playlists = [['', 'Default'], ...listPlaylists().map(p => [p, p]), ...CATEGORIES.map(c => [c, `${c} (category)`])];
+        const entries = () => Monitors.readEntries(settings);
+        // On the primary monitor a key may come from the "primary" entry; clearing it there too makes
+        // "Same as ..." and Reset stick. Set values go to the connector's entry, which wins.
+        const setKey = (connector, primary, key, value) => {
+            const all = entries();
+            const names = primary ? [connector, Monitors.PRIMARY] : [connector];
+            for (const name of names) {
+                const entry = all[name] ?? {};
+                delete entry[key];
+                if (value !== undefined && name === connector)
+                    entry[key] = value;
+                all[name] = entry;
+                if (Object.keys(entry).length === 0)
+                    delete all[name];
+            }
+            Monitors.writeEntries(settings, all);
+        };
+
+        const connected = connectedMonitors();
+        const configured = Object.keys(entries()).filter(c => c !== Monitors.PRIMARY && !connected.some(m => m.connector === c));
+        const syncs = [];
+        for (const {connector, primary} of [...connected, ...configured.map(c => ({connector: c, primary: false, gone: true}))]) {
+            const gone = !connected.some(m => m.connector === connector);
+            const group = new Adw.PreferencesGroup({
+                title: connector + (primary ? ' (primary)' : '') + (gone ? ' (not connected)' : ''),
+            });
+            // The monitor's effective entry, "primary" entry included for the primary monitor.
+            const effective = () => Monitors.entryFor(entries(), connector, primary);
+
+            const video = new Adw.SwitchRow({title: 'Video', subtitle: 'Play the Aerial video on this monitor'});
+            const playlist = new Adw.ComboRow({title: 'Playlist', model: Gtk.StringList.new(['Same as the Wallpaper page', ...playlists.map(([, l]) => l)])});
+            const conky = new Adw.SwitchRow({title: 'Conky panel', subtitle: 'Needs the panel switched on on the Conky page'});
+            const position = new Adw.ComboRow({title: 'Panel position', model: Gtk.StringList.new(['Same as the Conky page', ...POSITIONS.map(([, l]) => l)])});
+            let syncing = false;
+            const sync = () => {
+                syncing = true;
+                const e = effective();
+                video.set_active(e !== null && (e.aerial ?? true));
+                conky.set_active(e !== null && (e.conky ?? primary));
+                playlist.set_selected(e && 'playlist' in e ? 1 + Math.max(0, playlists.findIndex(([v]) => v === e.playlist)) : 0);
+                position.set_selected(e && 'conky-position' in e ? 1 + Math.max(0, POSITIONS.findIndex(([v]) => v === e['conky-position'])) : 0);
+                syncing = false;
+            };
+            sync();
+            syncs.push(sync);
+            video.connect('notify::active', () => !syncing && setKey(connector, primary, 'aerial', video.active));
+            conky.connect('notify::active', () => !syncing && setKey(connector, primary, 'conky', conky.active));
+            playlist.connect('notify::selected', () => {
+                const i = playlist.get_selected();
+                if (!syncing)
+                    setKey(connector, primary, 'playlist', i === 0 ? undefined : playlists[i - 1][0]);
+            });
+            position.connect('notify::selected', () => {
+                const i = position.get_selected();
+                if (!syncing)
+                    setKey(connector, primary, 'conky-position', i === 0 ? undefined : POSITIONS[i - 1][0]);
+            });
+            [video, playlist, conky, position].forEach(r => group.add(r));
+
+            const actions = new Adw.ActionRow({title: 'Overrides', subtitle: `aerial-wallpaper monitor ${connector} show`});
+            if (!gone) {
+                actions.add_suffix(this._button('Previous', () => mpvCommand(['playlist-prev', 'force'], connector)));
+                actions.add_suffix(this._button('Next', () => mpvCommand(['playlist-next', 'force'], connector)));
+            }
+            actions.add_suffix(this._button('Reset', () => {
+                const all = entries();
+                delete all[connector];
+                if (primary)
+                    delete all[Monitors.PRIMARY];
+                Monitors.writeEntries(settings, all);
+            }, 'destructive-action'));
+            group.add(actions);
+            page.add(group);
+        }
+        settings.connect('changed::monitors', () => syncs.forEach(f => f()));
+        return page;
     }
 
     _widgetsPage(settings) {
@@ -324,7 +453,7 @@ export default class AerialWallpaperPreferences extends ExtensionPreferences {
         const group = new Adw.PreferencesGroup({
             title: 'Widget windows',
             description: 'Windows with these classes (Wayland app id or X11 WM_CLASS) sit just above the video, ' +
-                'on every workspace, out of alt-tab and the overview. AerialConky is the Conky panel.',
+                'on every workspace, out of alt-tab and the overview. The Conky panels (AerialConky-*) always are.',
         });
         const rows = [];
         const add = new Adw.EntryRow({title: 'Add a window class', show_apply_button: true});
@@ -367,7 +496,10 @@ export default class AerialWallpaperPreferences extends ExtensionPreferences {
             ['aerial-wallpaper status', 'Extension, services, current video, Conky'],
             ['aerial-wallpaper keys', 'Every setting with type, value, default and allowed values'],
             ['aerial-wallpaper set KEY VALUE', 'Change a setting; it applies immediately'],
-            ['aerial-wallpaper next | prev | now', 'Skip or show the current video'],
+            ['aerial-wallpaper next | prev | now [--monitor M]', 'Skip or show the current video'],
+            ['aerial-wallpaper monitors', 'Connected monitors and what each one shows'],
+            ['aerial-wallpaper monitor M set KEY VALUE', 'Per-monitor override: aerial, conky, playlist, pause-when-covered, any conky-* key'],
+            ['aerial-wallpaper monitor M unset KEY | reset', 'Drop one or all of a monitor\'s overrides'],
             ['aerial-wallpaper conky sections', 'Sections, in order'],
             ['aerial-wallpaper conky enable gpu', 'Show a section; disable hides it, move reorders'],
             ['aerial-wallpaper conky on | off | restart | config', 'Run or stop the panel, or print its config'],

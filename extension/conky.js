@@ -1,13 +1,17 @@
 // Builds the Conky config for the panel from the extension's settings.
 //
-// Conky runs as a native Wayland client (out_to_wayland). GNOME has no layer-shell, so Conky
-// cannot place, stack or pin its own window there; the extension does that instead, finding
-// the window by its class (WINDOW_CLASS). Only GLib/Gio here: prefs.js imports this module too.
+// Conky runs as a native Wayland client (out_to_wayland), one per monitor that shows a panel, each
+// from its own config. GNOME has no layer-shell, so Conky cannot place, stack or pin its own window
+// there; the extension does that instead, finding the window by its class (WINDOW_CLASS-<id>).
+// `settings` is a Gio.Settings or a Monitors.Overlay (the monitor's entry over the global keys).
+// Only GLib/Gio here: prefs.js imports this module too.
 
 import GLib from 'gi://GLib';
 
+import * as Monitors from './monitors.js';
+
 export const WINDOW_CLASS = 'AerialConky';
-export const UNIT = 'aerial-conky.service';
+export const UNIT_PATTERN = 'aerial-conky@*.service';
 export const SECTIONS = ['header', 'clock', 'system', 'cpu', 'cores', 'memory', 'gpu', 'disks',
     'network', 'processes', 'aerial', 'custom'];
 export const SECTION_TITLES = {
@@ -25,8 +29,21 @@ export const SECTION_TITLES = {
     custom: 'Custom text',
 };
 
-export function configPath() {
-    return GLib.build_filenamev([GLib.get_user_config_dir(), 'aerial-wallpaper', 'conky.conf']);
+export function unit(id) {
+    return `aerial-conky@${id}.service`;
+}
+
+export function windowClass(id) {
+    return `${WINDOW_CLASS}-${id}`;
+}
+
+// The instance id from a window class, or null if it is not one of our panels.
+export function idFromClass(cls) {
+    return cls?.startsWith(`${WINDOW_CLASS}-`) ? cls.slice(WINDOW_CLASS.length + 1) : null;
+}
+
+export function configPath(id) {
+    return GLib.build_filenamev([GLib.get_user_config_dir(), 'aerial-wallpaper', `conky-${id}.conf`]);
 }
 
 // "#rrggbb" + opacity -> Conky's "#aarrggbb".
@@ -100,9 +117,9 @@ function cpuCount() {
     return Math.max(1, (text.match(/^processor\s*:/gm) ?? []).length);
 }
 
-export function buildConfig(settings) {
+export function buildConfig(settings, id) {
     if (settings.get_string('conky-mode') === 'custom')
-        return buildCustomWrapper(settings);
+        return buildCustomWrapper(settings, id);
 
     const font = parseFont(settings.get_string('conky-font'));
     const width = settings.get_int('conky-width');
@@ -212,11 +229,11 @@ export function buildConfig(settings) {
             return rows;
         },
         aerial: () => {
-            const log = GLib.build_filenamev([GLib.get_home_dir(), 'Videos', 'aerial', '.meta', 'played.log']);
+            // The video on this panel's monitor (empty when that monitor plays none).
             const playlist = settings.get_string('playlist') || 'default';
             return [
                 heading('Aerial', playlist),
-                `\${execi 10 tail -n1 '${log}' | sed -E 's|.*/aerial/||; s| [[].*||; s|/| · |'}`,
+                `\${execi 10 cat '${Monitors.nowPath(id)}' 2>/dev/null | sed -E 's|.*/aerial/||; s| [[].*||; s|/| · |'}`,
             ];
         },
         custom: () => settings.get_string('conky-custom-text').split('\n'),
@@ -230,7 +247,7 @@ export function buildConfig(settings) {
     return `-- Written by aerial-wallpaper@viablesys from its settings; edits here are overwritten.
 -- Change it with \`aerial-wallpaper set conky-...\`, gsettings or the extension preferences.
 conky.config = {
-${windowSettings(settings)}
+${windowSettings(settings, id)}
   minimum_width = ${width}, maximum_width = ${width},
   border_inner_margin = ${pad}, border_outer_margin = 0,
   font = ${luaString(fontSpec())},
@@ -254,13 +271,13 @@ ${body}
 
 // The window settings the extension relies on: a native Wayland window with our class.
 // Placement, stacking and pinning are done by the extension.
-function windowSettings(settings, target = 'conky.config') {
+function windowSettings(settings, id, target = 'conky.config') {
     const lines = {
         out_to_x: 'false',
         out_to_wayland: 'true',
         own_window: 'true',
         own_window_type: luaString('normal'),
-        own_window_class: luaString(WINDOW_CLASS),
+        own_window_class: luaString(windowClass(id)),
         own_window_title: luaString('Aerial Conky'),
         own_window_colour: luaString(argb(settings.get_string('conky-background'),
             settings.get_double('conky-opacity'))),
@@ -273,26 +290,26 @@ function windowSettings(settings, target = 'conky.config') {
     return Object.entries(lines).map(([k, v]) => `${target}.${k} = ${v}`).join('\n');
 }
 
-function buildCustomWrapper(settings) {
+function buildCustomWrapper(settings, id) {
     const path = settings.get_string('conky-custom-path').replace(/^~(?=\/|$)/, GLib.get_home_dir());
     if (!path)
         return `-- Written by aerial-wallpaper@viablesys: conky-mode is custom but conky-custom-path is empty.
 conky.config = {
-${windowSettings(settings)}
+${windowSettings(settings, id)}
 }
 conky.text = [[Set conky-custom-path (aerial-wallpaper set conky-custom-path ~/.config/conky/conky.conf)]]
 `;
     return `-- Written by aerial-wallpaper@viablesys: your config, then the window settings the extension needs.
 -- Edit ${path} instead; Conky reloads this file, not that one, so run \`aerial-wallpaper conky restart\` after edits.
 dofile(${luaString(path)})
-${windowSettings(settings, 'conky.config')}
+${windowSettings(settings, id, 'conky.config')}
 `;
 }
 
-export function writeConfig(settings) {
-    const path = configPath();
+export function writeConfig(settings, id) {
+    const path = configPath(id);
     GLib.mkdir_with_parents(GLib.path_get_dirname(path), 0o755);
-    const text = buildConfig(settings);
+    const text = buildConfig(settings, id);
     if (readText(path) === text)
         return false;
     GLib.file_set_contents(path, text);

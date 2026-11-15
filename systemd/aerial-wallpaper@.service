@@ -1,0 +1,17 @@
+[Unit]
+Description=Aerial video as the desktop background on monitor %i (started and stopped by the aerial-wallpaper@viablesys extension)
+PartOf=graphical-session.target
+After=graphical-session.target
+Conflicts=aerial.service
+
+[Service]
+Type=simple
+Environment=AERIAL_MODE=wallpaper AERIAL_INSTANCE=%i
+# AERIAL_PLAYLIST for this monitor, written by the extension before it starts the unit.
+EnvironmentFile=-%t/aerial-wallpaper/%i.env
+ExecStart=%h/.local/bin/wall-aerial
+Restart=on-failure
+RestartSec=5
+# mpv exits non-zero on SIGTERM; a stop is not a failure.
+SuccessExitStatus=4 SIGTERM
+StandardOutput=null
